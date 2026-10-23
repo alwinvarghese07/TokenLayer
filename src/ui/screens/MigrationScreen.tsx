@@ -1,6 +1,5 @@
 import React, { useState, useMemo, useRef, useEffect, useCallback } from 'react';
 import {
-  ArrowLeft,
   ArrowRight,
   Folder,
   ChevronDown,
@@ -11,8 +10,6 @@ import {
   AlertCircle,
   AlertTriangle,
   Search,
-  ExternalLink,
-  MoreHorizontal,
   Layers,
   Code2,
 } from 'lucide-react';
@@ -21,6 +18,8 @@ import type {
   TokenItem,
   TokenResolvedType,
   PluginMessage,
+  MigrationRecord,
+  MigrationStatus,
 } from '../../shared/messages';
 import { parseTokenPath, getVariantName } from '../utils/tokenTree';
 import { formatHexColor } from '../utils/color';
@@ -61,12 +60,36 @@ interface PreviewItem {
   sourceFormatted?: string;
 }
 
+function computeTargetName(
+  sourceName: string,
+  preserveNestedGroups: boolean,
+  tokenNaming: string,
+  sourceCollectionName: string
+): string {
+  const pathParts = sourceName
+    .replace(/\\/g, '/')
+    .split('/')
+    .map((s) => s.trim())
+    .filter((s) => s.length > 0);
+  const leafName = pathParts.length > 0 ? pathParts[pathParts.length - 1] : sourceName;
+
+  let targetName = preserveNestedGroups ? sourceName : leafName;
+  if (tokenNaming === 'Prefix with collection') {
+    targetName = `${sourceCollectionName}/${targetName}`;
+  } else if (tokenNaming === 'Add v2 suffix') {
+    targetName = `${targetName}-v2`;
+  } else if (tokenNaming === 'Lowercase with hyphens') {
+    targetName = targetName.toLowerCase().replace(/[/\\s]+/g, '-');
+  }
+  return targetName;
+}
+
 export const MigrationScreen: React.FC<MigrationScreenProps> = ({
   onBack,
   selectedTokenIds = [],
   tokens = [],
   collections = [],
-  docName,
+  docName: _docName,
   onNotify,
 }) => {
   // Navigation step: 'setup' | 'preview' | 'results'
@@ -78,6 +101,7 @@ export const MigrationScreen: React.FC<MigrationScreenProps> = ({
   // SETUP STATE
   // --------------------------------------------------------------------------
   const defaultSource = useMemo(() => {
+    if (collections.length === 0) return null;
     if (selectedTokenIds.length > 0) {
       const firstSelected = tokens.find((t) => selectedTokenIds.includes(t.id));
       if (firstSelected) {
@@ -90,22 +114,16 @@ export const MigrationScreen: React.FC<MigrationScreenProps> = ({
   }, [selectedTokenIds, tokens, collections]);
 
   const [selectedSourceId, setSelectedSourceId] = useState<string>(
-    defaultSource ? defaultSource.id : 'colors-source'
+    defaultSource ? defaultSource.id : ''
   );
 
-  const activeSourceCollection = useMemo(() => {
+  const activeSourceCollection = useMemo<TokenCollection | null>(() => {
+    if (collections.length === 0) return null;
     return (
       collections.find((c) => c.id === selectedSourceId) ||
-      defaultSource || {
-        id: 'colors-source',
-        name: 'Colors',
-        defaultModeId: 'm1',
-        modes: [
-          { modeId: 'm1', name: 'Light' },
-          { modeId: 'm2', name: 'Dark' },
-        ],
-        variableCount: 24,
-      }
+      defaultSource ||
+      collections[0] ||
+      null
     );
   }, [collections, selectedSourceId, defaultSource]);
 
@@ -114,6 +132,7 @@ export const MigrationScreen: React.FC<MigrationScreenProps> = ({
 
   // Real existing collections (excluding active source)
   const existingDestinations = useMemo<DestinationOption[]>(() => {
+    if (!activeSourceCollection) return [];
     return collections
       .filter((c) => c.id !== activeSourceCollection.id)
       .map((c) => ({
@@ -121,7 +140,7 @@ export const MigrationScreen: React.FC<MigrationScreenProps> = ({
         name: c.name,
         isNew: false,
       }));
-  }, [collections, activeSourceCollection.id]);
+  }, [collections, activeSourceCollection]);
 
   const allDestinations = useMemo<DestinationOption[]>(() => {
     return [...createdCollections, ...existingDestinations];
@@ -130,17 +149,17 @@ export const MigrationScreen: React.FC<MigrationScreenProps> = ({
   // Selected destination collection (defaults to an existing collection or null)
   const [selectedDestination, setSelectedDestination] = useState<DestinationOption | null>(() => {
     if (existingDestinations.length > 0) return existingDestinations[0];
-    return { id: 'colors-v2-target', name: 'Colors v2', isNew: false };
+    return null;
   });
 
   useEffect(() => {
-    if (selectedDestination && selectedDestination.id === activeSourceCollection.id) {
+    if (activeSourceCollection && selectedDestination && selectedDestination.id === activeSourceCollection.id) {
       const next = allDestinations.find((d) => d.id !== activeSourceCollection.id);
       setSelectedDestination(next || null);
     } else if (!selectedDestination && existingDestinations.length > 0) {
       setSelectedDestination(existingDestinations[0]);
     }
-  }, [activeSourceCollection.id, existingDestinations, allDestinations, selectedDestination]);
+  }, [activeSourceCollection, existingDestinations, allDestinations, selectedDestination]);
 
   // Create Collection Modal state
   const [isCreateModalOpen, setIsCreateModalOpen] = useState<boolean>(false);
@@ -173,19 +192,20 @@ export const MigrationScreen: React.FC<MigrationScreenProps> = ({
 
   // Compute source tokens
   const relevantTokens = useMemo(() => {
+    if (!activeSourceCollection) return [];
     if (selectedTokenIds.length > 0) {
-      const selected = tokens.filter((t) => selectedTokenIds.includes(t.id));
+      const selected = tokens.filter(
+        (t) => selectedTokenIds.includes(t.id) && t.collectionId === activeSourceCollection.id
+      );
       if (selected.length > 0) return selected;
     }
-    const fromCol = tokens.filter((t) => t.collectionId === activeSourceCollection.id);
-    if (fromCol.length > 0) return fromCol;
-    return tokens.slice(0, 24);
-  }, [selectedTokenIds, tokens, activeSourceCollection.id]);
+    return tokens.filter((t) => t.collectionId === activeSourceCollection.id);
+  }, [selectedTokenIds, tokens, activeSourceCollection]);
 
-  const tokenCount = relevantTokens.length > 0 ? relevantTokens.length : 24;
+  const tokenCount = relevantTokens.length;
 
   const nestedGroupsCount = useMemo(() => {
-    if (relevantTokens.length === 0) return 3;
+    if (relevantTokens.length === 0) return 0;
     const groups = new Set<string>();
     relevantTokens.forEach((t) => {
       const { categoryName, groupPath } = parseTokenPath(t);
@@ -195,21 +215,21 @@ export const MigrationScreen: React.FC<MigrationScreenProps> = ({
         groups.add(categoryName);
       }
     });
-    return Math.max(1, Math.min(groups.size, 12)) || 3;
+    return groups.size;
   }, [relevantTokens]);
 
   const modesList = useMemo(() => {
-    if (activeSourceCollection.modes && activeSourceCollection.modes.length > 0) {
+    if (activeSourceCollection?.modes && activeSourceCollection.modes.length > 0) {
       return activeSourceCollection.modes.map((m) => m.name).join(', ');
     }
-    return 'Light, Dark';
+    return 'None';
   }, [activeSourceCollection]);
 
   const modeCount = useMemo(() => {
-    if (activeSourceCollection.modes && activeSourceCollection.modes.length > 0) {
+    if (activeSourceCollection?.modes && activeSourceCollection.modes.length > 0) {
       return activeSourceCollection.modes.length;
     }
-    return 2;
+    return 0;
   }, [activeSourceCollection]);
 
   // Validate collection name
@@ -227,6 +247,17 @@ export const MigrationScreen: React.FC<MigrationScreenProps> = ({
     }
     return null;
   };
+
+  const currentMigrationIdRef = useRef<string | null>(null);
+  const activeMigrationRecordRef = useRef<MigrationRecord | null>(null);
+  const activeSourceRef = useRef(activeSourceCollection);
+  const selectedDestRef = useRef(selectedDestination);
+  useEffect(() => {
+    activeSourceRef.current = activeSourceCollection;
+  }, [activeSourceCollection]);
+  useEffect(() => {
+    selectedDestRef.current = selectedDestination;
+  }, [selectedDestination]);
 
   const handleNameChange = (e: React.ChangeEvent<HTMLInputElement>) => {
     const val = e.target.value;
@@ -262,6 +293,10 @@ export const MigrationScreen: React.FC<MigrationScreenProps> = ({
         }
       } else if (msg.type === 'MIGRATION_RESULT') {
         setIsMigrating(false);
+        const migrationId = msg.payload.migrationId || currentMigrationIdRef.current || `mig-${Date.now()}`;
+        const sourceName = msg.payload.sourceCollectionName || activeSourceRef.current?.name || 'Source Collection';
+        const destName = msg.payload.destinationCollectionName || selectedDestRef.current?.name || 'Destination Collection';
+
         if (msg.payload.success) {
           setMigrationResults(msg.payload.results);
           setCurrentStep('results');
@@ -269,14 +304,41 @@ export const MigrationScreen: React.FC<MigrationScreenProps> = ({
           const updated = msg.payload.results.filter((r) => r.status === 'UPDATED').length;
           const skipped = msg.payload.results.filter((r) => r.status === 'SKIPPED').length;
           const failed = msg.payload.results.filter((r) => r.status === 'FAILED').length;
-          const notifyText = `Migration completed in Figma: ${successful} created${updated > 0 ? `, ${updated} updated` : ''
-            }${skipped > 0 ? `, ${skipped} skipped` : ''}${failed > 0 ? `, ${failed} failed` : ''}`;
+          const total = msg.payload.results.length;
+
+          let status: MigrationStatus = 'COMPLETED';
+          if (failed > 0) {
+            status = failed === total && total > 0 ? 'FAILED' : 'NEEDS_ATTENTION';
+          }
+
+          const completedRecord: MigrationRecord = {
+            id: migrationId,
+            sourceCollectionId: activeSourceRef.current?.id || '',
+            sourceCollectionName: sourceName,
+            destinationCollectionId: selectedDestRef.current?.id,
+            destinationCollectionName: destName,
+            status,
+            startedAt: activeMigrationRecordRef.current?.startedAt || Date.now(),
+            completedAt: Date.now(),
+            summary: { total, successful, updated, skipped, failed },
+            results: msg.payload.results,
+          };
+          activeMigrationRecordRef.current = completedRecord;
+
+          postToPlugin({
+            type: 'SAVE_MIGRATION_RECORD',
+            payload: completedRecord,
+          });
+
+          const notifyText = `Migration completed in Figma: ${successful} created${
+            updated > 0 ? `, ${updated} updated` : ''
+          }${skipped > 0 ? `, ${skipped} skipped` : ''}${failed > 0 ? `, ${failed} failed` : ''}`;
           if (onNotify) {
             onNotify(notifyText);
           }
         } else {
           setCurrentStep('results');
-          setMigrationResults([
+          const errorResults: MigrationTokenResult[] = [
             {
               id: 'err-figma',
               name: 'Migration Error',
@@ -287,7 +349,28 @@ export const MigrationScreen: React.FC<MigrationScreenProps> = ({
               detail: msg.payload.error || 'Failed to apply migration to Figma document.',
               errorReason: msg.payload.error || 'Figma API execution failure.',
             },
-          ]);
+          ];
+          setMigrationResults(errorResults);
+
+          const failedRecord: MigrationRecord = {
+            id: migrationId,
+            sourceCollectionId: activeSourceRef.current?.id || '',
+            sourceCollectionName: sourceName,
+            destinationCollectionId: selectedDestRef.current?.id,
+            destinationCollectionName: destName,
+            status: 'FAILED',
+            startedAt: activeMigrationRecordRef.current?.startedAt || Date.now(),
+            completedAt: Date.now(),
+            errorMessage: msg.payload.error || 'Migration failed in Figma.',
+            results: errorResults,
+          };
+          activeMigrationRecordRef.current = failedRecord;
+
+          postToPlugin({
+            type: 'SAVE_MIGRATION_RECORD',
+            payload: failedRecord,
+          });
+
           if (onNotify) {
             onNotify(msg.payload.error || 'Migration failed in Figma.');
           }
@@ -315,7 +398,7 @@ export const MigrationScreen: React.FC<MigrationScreenProps> = ({
       payload: {
         name: newColName.trim(),
         description: newColDesc.trim() || undefined,
-        sourceCollectionId: activeSourceCollection.id,
+        sourceCollectionId: activeSourceCollection?.id || '',
       },
     });
   };
@@ -324,7 +407,7 @@ export const MigrationScreen: React.FC<MigrationScreenProps> = ({
   // PREVIEW STATE & LOGIC
   // --------------------------------------------------------------------------
   const previewModes = useMemo(() => {
-    if (activeSourceCollection.modes && activeSourceCollection.modes.length > 0) {
+    if (activeSourceCollection?.modes && activeSourceCollection.modes.length > 0) {
       return activeSourceCollection.modes;
     }
     return [
@@ -337,16 +420,10 @@ export const MigrationScreen: React.FC<MigrationScreenProps> = ({
     previewModes[0]?.modeId || 'm1'
   );
 
-  const activePreviewModeName = useMemo(() => {
-    const m = previewModes.find((pm) => pm.modeId === activePreviewModeId);
-    return m ? m.name : 'Light';
-  }, [previewModes, activePreviewModeId]);
-
   const [previewSearch, setPreviewSearch] = useState<string>('');
-  const [previewTypeFilter, setPreviewTypeFilter] = useState<string>('Color');
+  const [previewTypeFilter, setPreviewTypeFilter] = useState<string>('All types');
   const [filterTab, setFilterTab] = useState<FilterTab>('all');
   const [collapsedGroups, setCollapsedGroups] = useState<Set<string>>(new Set());
-  const [showFullPath, setShowFullPath] = useState<boolean>(false);
 
   const toggleGroupCollapse = (grp: string) => {
     setCollapsedGroups((prev) => {
@@ -359,44 +436,37 @@ export const MigrationScreen: React.FC<MigrationScreenProps> = ({
 
   // Generate comparison items comparing Source tokens against Destination
   const previewItems: PreviewItem[] = useMemo(() => {
+    if (!selectedDestination) return [];
+
     // Look for real destination tokens if destination exists
-    const destTokens = selectedDestination
+    const destTokens = !selectedDestination.isNew
       ? tokens.filter((t) => t.collectionId === selectedDestination.id)
       : [];
 
-    const isNewDest = selectedDestination?.isNew ?? false;
-
-    // Standard simulated palette when testing or baseline comparison
-    const sampleHexMap: Record<string, { src: string; dest?: string; status?: PreviewItem['status'] }> = {
-      primary: { src: '#6366F1' },
-      secondary: { src: '#8B5CF6', dest: '#7C3AED', status: 'Conflict · Skipped' },
-      foreground: { src: '#FFFFFF', dest: '#FFFFFF', status: 'Unchanged · Skipped' },
-      hover: { src: '#4F46E5', dest: '#4338CA', status: 'Conflict · Skipped' },
-      subtle: { src: '#EEF2FF' },
-      pressed: { src: '#3730A3' },
-      background: { src: '#0F172A', dest: '#0F172A', status: 'Unchanged · Skipped' },
-      border: { src: '#E2E8F0', dest: '#CBD5E1', status: 'Conflict · Skipped' },
-      muted: { src: '#64748B', dest: '#475569', status: 'Conflict · Skipped' },
-    };
-
-    return relevantTokens.map((token, idx) => {
+    return relevantTokens.map((token) => {
       const leaf = getVariantName(token);
       const parsed = parseTokenPath(token);
       const group =
         parsed.groupPath.length > 0
           ? parsed.groupPath.join(' / ')
-          : parsed.categoryName || 'Semantic / Brand';
+          : parsed.categoryName || 'General';
+
+      const targetName = computeTargetName(
+        token.name,
+        preserveNestedGroups,
+        tokenNaming,
+        activeSourceCollection?.name || ''
+      );
 
       const modeVal =
         token.valuesByMode[activePreviewModeId] || Object.values(token.valuesByMode)[0];
-      const sourceHex =
-        formatHexColor(modeVal) || modeVal?.colorHex || sampleHexMap[leaf.toLowerCase()]?.src || '#6366F1';
-      const sourceFormatted = modeVal?.formattedValue || String(modeVal?.value ?? sourceHex);
+      const sourceHex = formatHexColor(modeVal) || modeVal?.colorHex;
+      const sourceFormatted =
+        modeVal?.formattedValue ||
+        (modeVal?.value !== undefined && modeVal?.value !== null ? String(modeVal.value) : sourceHex || '');
 
       // Check if real token exists in destination collection
-      const matchedDest = destTokens.find(
-        (dt) => dt.name === token.name || getVariantName(dt) === leaf
-      );
+      const matchedDest = destTokens.find((dt) => dt.name === targetName);
 
       let status: PreviewItem['status'] = 'Added';
       let destHex: string | undefined = undefined;
@@ -408,37 +478,29 @@ export const MigrationScreen: React.FC<MigrationScreenProps> = ({
           matchedDest.valuesByMode[activePreviewModeId] ||
           Object.values(matchedDest.valuesByMode)[0];
         destHex = formatHexColor(destModeVal) || destModeVal?.colorHex;
-        destFormatted = destModeVal?.formattedValue || String(destModeVal?.value ?? destHex);
+        destFormatted =
+          destModeVal?.formattedValue ||
+          (destModeVal?.value !== undefined && destModeVal?.value !== null
+            ? String(destModeVal.value)
+            : destHex || '');
         hasDestValue = true;
 
-        if (destHex === sourceHex || destFormatted === sourceFormatted) {
-          status = 'Unchanged · Skipped';
+        if (matchedDest.resolvedType !== token.resolvedType) {
+          status = 'Conflict · Skipped';
+        } else if (nameConflicts === 'Rename with suffix') {
+          status = 'Added';
         } else {
-          status = nameConflicts === 'Overwrite existing' ? 'Updated' : 'Conflict · Skipped';
-        }
-      } else if (!isNewDest) {
-        // Fallback realistic baseline simulation matching user reference
-        const sample = sampleHexMap[leaf.toLowerCase()];
-        if (sample && sample.dest) {
-          destHex = sample.dest;
-          destFormatted = sample.dest;
-          hasDestValue = true;
-          status =
-            sample.status === 'Unchanged · Skipped'
-              ? 'Unchanged · Skipped'
-              : nameConflicts === 'Overwrite existing'
-                ? 'Updated'
-                : 'Conflict · Skipped';
-        } else if (idx === 1 || idx === 3 || idx === 7 || idx === 11) {
-          destHex = '#7C3AED';
-          destFormatted = '#7C3AED';
-          hasDestValue = true;
-          status = nameConflicts === 'Overwrite existing' ? 'Updated' : 'Conflict · Skipped';
-        } else if (idx === 2 || idx === 6) {
-          destHex = sourceHex;
-          destFormatted = sourceFormatted;
-          hasDestValue = true;
-          status = 'Unchanged · Skipped';
+          const isIdentical =
+            (sourceHex && destHex && sourceHex.toUpperCase() === destHex.toUpperCase()) ||
+            (sourceFormatted && destFormatted && sourceFormatted === destFormatted);
+
+          if (isIdentical) {
+            status = 'Unchanged · Skipped';
+          } else if (nameConflicts === 'Overwrite existing') {
+            status = 'Updated';
+          } else {
+            status = 'Conflict · Skipped';
+          }
         }
       }
 
@@ -457,7 +519,16 @@ export const MigrationScreen: React.FC<MigrationScreenProps> = ({
         sourceFormatted,
       };
     });
-  }, [relevantTokens, tokens, selectedDestination, activePreviewModeId, nameConflicts]);
+  }, [
+    relevantTokens,
+    tokens,
+    selectedDestination,
+    activePreviewModeId,
+    nameConflicts,
+    preserveNestedGroups,
+    tokenNaming,
+    activeSourceCollection?.name,
+  ]);
 
   // Overall metric counts
   const tokensToAdd = useMemo(
@@ -523,6 +594,35 @@ export const MigrationScreen: React.FC<MigrationScreenProps> = ({
   }, [filteredPreviewItems]);
 
   const handleApplyMigration = () => {
+    const migrationId = `mig-${Date.now()}-${Math.random().toString(36).slice(2, 7)}`;
+    currentMigrationIdRef.current = migrationId;
+
+    const initialRecord: MigrationRecord = {
+      id: migrationId,
+      sourceCollectionId: activeSourceCollection?.id || '',
+      sourceCollectionName: activeSourceCollection?.name || 'Source Collection',
+      destinationCollectionId: selectedDestination?.id?.startsWith('created-')
+        ? undefined
+        : selectedDestination?.id,
+      destinationCollectionName: selectedDestination?.name || 'Destination Collection',
+      status: 'IN_PROGRESS',
+      startedAt: Date.now(),
+      summary: {
+        total: relevantTokens.length,
+        successful: 0,
+        updated: 0,
+        skipped: 0,
+        failed: 0,
+      },
+    };
+    activeMigrationRecordRef.current = initialRecord;
+
+    // Immediately persist in_progress status
+    postToPlugin({
+      type: 'SAVE_MIGRATION_RECORD',
+      payload: initialRecord,
+    });
+
     setIsMigrating(true);
     setCurrentStep('results');
 
@@ -530,7 +630,8 @@ export const MigrationScreen: React.FC<MigrationScreenProps> = ({
     postToPlugin({
       type: 'EXECUTE_MIGRATION',
       payload: {
-        sourceCollectionId: activeSourceCollection.id,
+        migrationId,
+        sourceCollectionId: activeSourceCollection?.id || '',
         destinationCollectionId: selectedDestination?.id?.startsWith('created-')
           ? undefined
           : selectedDestination?.id,
@@ -549,11 +650,40 @@ export const MigrationScreen: React.FC<MigrationScreenProps> = ({
       .map((r) => r.id);
     if (failedIds.length === 0) return;
 
+    const migrationId = currentMigrationIdRef.current || `mig-${Date.now()}-${Math.random().toString(36).slice(2, 7)}`;
+    currentMigrationIdRef.current = migrationId;
+
+    const retryRecord: MigrationRecord = {
+      id: migrationId,
+      sourceCollectionId: activeSourceCollection?.id || '',
+      sourceCollectionName: activeSourceCollection?.name || 'Source Collection',
+      destinationCollectionId: selectedDestination?.id?.startsWith('created-')
+        ? undefined
+        : selectedDestination?.id,
+      destinationCollectionName: selectedDestination?.name || 'Destination Collection',
+      status: 'IN_PROGRESS',
+      startedAt: activeMigrationRecordRef.current?.startedAt || Date.now(),
+      summary: {
+        total: failedIds.length,
+        successful: 0,
+        updated: 0,
+        skipped: 0,
+        failed: 0,
+      },
+    };
+    activeMigrationRecordRef.current = retryRecord;
+
+    postToPlugin({
+      type: 'SAVE_MIGRATION_RECORD',
+      payload: retryRecord,
+    });
+
     setIsMigrating(true);
     postToPlugin({
       type: 'EXECUTE_MIGRATION',
       payload: {
-        sourceCollectionId: activeSourceCollection.id,
+        migrationId,
+        sourceCollectionId: activeSourceCollection?.id || '',
         destinationCollectionId: selectedDestination?.id?.startsWith('created-')
           ? undefined
           : selectedDestination?.id,
@@ -572,7 +702,7 @@ export const MigrationScreen: React.FC<MigrationScreenProps> = ({
   if (currentStep === 'results') {
     return (
       <MigrationResultsScreen
-        sourceCollectionName={activeSourceCollection.name}
+        sourceCollectionName={activeSourceCollection?.name || 'Source Collection'}
         destinationCollectionName={selectedDestination?.name || 'Destination Collection'}
         results={migrationResults}
         isLoading={isMigrating}
@@ -604,7 +734,7 @@ export const MigrationScreen: React.FC<MigrationScreenProps> = ({
             <div className="flex items-center gap-2 min-w-0 text-[12.5px]">
               <Layers className="w-3.5 h-3.5 text-[#71717A] shrink-0" />
               <span className="font-medium text-white truncate max-w-[125px]">
-                {activeSourceCollection.name}
+                {activeSourceCollection?.name || 'Source Collection'}
               </span>
               <ArrowRight className="w-3.5 h-3.5 text-[#52525B] shrink-0" />
               <Code2 className="w-3.5 h-3.5 text-[#71717A] shrink-0" />
@@ -833,10 +963,12 @@ export const MigrationScreen: React.FC<MigrationScreenProps> = ({
                               <div className="flex items-center gap-1.5 w-[78px] justify-end">
                                 {item.hasDestValue ? (
                                   <>
-                                    <div
-                                      className="w-2.5 h-2.5 rounded-[2px] shrink-0 border border-white/10"
-                                      style={{ backgroundColor: item.destHex || '#000000' }}
-                                    />
+                                    {item.destHex && (
+                                      <div
+                                        className="w-2.5 h-2.5 rounded-[2px] shrink-0 border border-white/10"
+                                        style={{ backgroundColor: item.destHex }}
+                                      />
+                                    )}
                                     <span className="text-[#8E8E93] truncate">
                                       {item.destHex || item.destFormatted}
                                     </span>
@@ -851,10 +983,12 @@ export const MigrationScreen: React.FC<MigrationScreenProps> = ({
 
                               {/* Proposed (Source) */}
                               <div className="flex items-center gap-1.5 w-[78px]">
-                                <div
-                                  className="w-2.5 h-2.5 rounded-[2px] shrink-0 border border-white/10"
-                                  style={{ backgroundColor: item.sourceHex || '#6366F1' }}
-                                />
+                                {item.sourceHex && (
+                                  <div
+                                    className="w-2.5 h-2.5 rounded-[2px] shrink-0 border border-white/10"
+                                    style={{ backgroundColor: item.sourceHex }}
+                                  />
+                                )}
                                 <span className="text-[#E4E4E7] truncate">
                                   {item.sourceHex || item.sourceFormatted}
                                 </span>
@@ -923,8 +1057,42 @@ export const MigrationScreen: React.FC<MigrationScreenProps> = ({
           </div>
 
           <p className="text-[11px] text-[#71717A] text-center mt-2 leading-tight">
-            Adds {tokensToAdd} tokens · {tokensToSkip} skipped · No overwrites
+            {tokensToAdd} added · {tokensToUpdate} updated · {tokensToSkip} skipped
           </p>
+        </div>
+      </div>
+    );
+  }
+
+  // --------------------------------------------------------------------------
+  // RENDER: EMPTY COLLECTIONS STATE
+  // --------------------------------------------------------------------------
+  if (collections.length === 0) {
+    return (
+      <div className="flex flex-col h-full bg-[#0D0D0E] text-white select-none overflow-hidden relative font-sans">
+        {/* Top Bar */}
+        <div className="px-4 pt-3.5 pb-2 flex items-center shrink-0">
+          <BackButton onClick={onBack} />
+        </div>
+
+        {/* Empty State Body */}
+        <div className="flex-1 flex flex-col items-center justify-center px-6 text-center -mt-8">
+          <div className="w-12 h-12 rounded-xl bg-[#18181B] border border-[#27272A] flex items-center justify-center mb-4 text-[#A1A1AA]">
+            <Folder className="w-6 h-6" strokeWidth={1.5} />
+          </div>
+          <h2 className="text-[17px] font-semibold text-white tracking-tight mb-2">
+            No variable collections found
+          </h2>
+          <p className="text-[13px] text-[#8E8E93] leading-relaxed max-w-[280px] mb-6">
+            This Figma file does not have any local variable collections yet. Create local variables in Figma first to migrate tokens.
+          </p>
+          <button
+            type="button"
+            onClick={onBack}
+            className="bg-[#18181B] hover:bg-[#222226] text-white font-medium text-[13px] h-9 px-4 rounded-lg border border-[#2E2E33] transition-colors cursor-pointer"
+          >
+            Back to Home
+          </button>
         </div>
       </div>
     );
@@ -972,7 +1140,7 @@ export const MigrationScreen: React.FC<MigrationScreenProps> = ({
               <div className="flex items-center gap-2.5 min-w-0">
                 <Folder className="w-4 h-4 text-[#8E8E93] shrink-0" strokeWidth={1.8} />
                 <span className="text-[14px] font-medium text-white truncate">
-                  {activeSourceCollection.name}
+                  {activeSourceCollection?.name || 'Select collection'}
                 </span>
               </div>
               <ChevronDown className="w-4 h-4 text-[#71717A] shrink-0 ml-2" />
@@ -983,7 +1151,7 @@ export const MigrationScreen: React.FC<MigrationScreenProps> = ({
               <div className="absolute left-0 right-0 top-full mt-1.5 bg-[#18181B] border border-[#2E2E34] rounded-lg shadow-[0_12px_32px_rgba(0,0,0,0.8)] py-1 z-30 max-h-48 overflow-y-auto custom-scrollbar">
                 {collections.length > 0 ? (
                   collections.map((col) => {
-                    const isSelected = col.id === activeSourceCollection.id;
+                    const isSelected = col.id === activeSourceCollection?.id;
                     return (
                       <button
                         key={col.id}
@@ -1282,7 +1450,7 @@ export const MigrationScreen: React.FC<MigrationScreenProps> = ({
           <div className="space-y-1.5">
             <div className="flex items-center justify-between text-[13px]">
               <span className="text-[#8E8E93]">Source collection</span>
-              <span className="font-normal text-white">{activeSourceCollection.name}</span>
+              <span className="font-normal text-white">{activeSourceCollection?.name || 'None'}</span>
             </div>
             <div className="flex items-center justify-between text-[13px]">
               <span className="text-[#8E8E93]">Destination collection</span>
@@ -1301,7 +1469,9 @@ export const MigrationScreen: React.FC<MigrationScreenProps> = ({
           </div>
 
           <p className="text-[12px] text-[#71717A] mt-3 leading-normal">
-            {selectedDestination
+            {tokenCount === 0
+              ? 'Selected collection has no variables to migrate.'
+              : selectedDestination
               ? `Ready to migrate ${tokenCount} tokens into ${selectedDestination.name}.`
               : 'Please select a destination collection to continue.'}
           </p>
@@ -1320,7 +1490,7 @@ export const MigrationScreen: React.FC<MigrationScreenProps> = ({
 
           <button
             onClick={() => setCurrentStep('preview')}
-            disabled={!selectedDestination}
+            disabled={!selectedDestination || tokenCount === 0}
             className="bg-white hover:bg-neutral-200 disabled:opacity-35 disabled:cursor-not-allowed text-black font-semibold text-[13.5px] px-5 py-2.5 rounded-lg flex-1 flex items-center justify-center gap-2 transition-colors cursor-pointer active:scale-[0.99]"
           >
             <span>Continue to Preview</span>

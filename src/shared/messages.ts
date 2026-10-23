@@ -38,10 +38,52 @@ export interface TokenCollection {
   variableCount: number;
 }
 
+export type MigrationStatus = 'COMPLETED' | 'IN_PROGRESS' | 'FAILED' | 'NEEDS_ATTENTION';
+
+export interface MigrationSummary {
+  total: number;
+  successful: number;
+  updated: number;
+  skipped: number;
+  failed: number;
+}
+
+export interface MigrationTokenItemResult {
+  id: string;
+  name: string;
+  leafName: string;
+  groupPath: string;
+  resolvedType: TokenResolvedType;
+  status: 'SUCCESSFUL' | 'UPDATED' | 'SKIPPED' | 'FAILED';
+  detail: string;
+  sourceHex?: string;
+  destHex?: string;
+  sourceValue?: string;
+  destValue?: string;
+  errorReason?: string;
+}
+
+export interface MigrationRecord {
+  id: string;
+  sourceCollectionId?: string;
+  sourceCollectionName: string;
+  destinationCollectionId?: string;
+  destinationCollectionName: string;
+  status: MigrationStatus;
+  startedAt: number;
+  completedAt?: number;
+  summary?: MigrationSummary;
+  results?: MigrationTokenItemResult[];
+  errorMessage?: string;
+}
+
 // Messages sent from UI -> Plugin Runtime
 export type UIMessage =
   | { type: 'INIT' }
   | { type: 'LOAD_TOKENS' }
+  | { type: 'GET_MIGRATION_HISTORY' }
+  | { type: 'SAVE_MIGRATION_RECORD'; payload: MigrationRecord }
+  | { type: 'CLEAR_MIGRATION_HISTORY' }
   | { type: 'RESIZE'; width: number; height: number }
   | { type: 'NOTIFY'; message: string }
   | { type: 'CLOSE_PLUGIN' }
@@ -56,6 +98,7 @@ export type UIMessage =
   | {
       type: 'EXECUTE_MIGRATION';
       payload: {
+        migrationId?: string;
         sourceCollectionId: string;
         destinationCollectionId?: string;
         destinationName: string;
@@ -71,7 +114,6 @@ export type PluginMessage =
   | {
       type: 'PLUGIN_READY';
       payload: {
-        userName?: string;
         documentName?: string;
       };
     }
@@ -80,6 +122,13 @@ export type PluginMessage =
       payload: {
         collections: TokenCollection[];
         tokens: TokenItem[];
+      };
+    }
+  | {
+      type: 'MIGRATION_HISTORY_LOADED';
+      payload: {
+        records: MigrationRecord[];
+        error?: string;
       };
     }
   | {
@@ -93,23 +142,11 @@ export type PluginMessage =
   | {
       type: 'MIGRATION_RESULT';
       payload: {
+        migrationId?: string;
         success: boolean;
         sourceCollectionName: string;
         destinationCollectionName: string;
-        results: Array<{
-          id: string;
-          name: string;
-          leafName: string;
-          groupPath: string;
-          resolvedType: TokenResolvedType;
-          status: 'SUCCESSFUL' | 'UPDATED' | 'SKIPPED' | 'FAILED';
-          detail: string;
-          sourceHex?: string;
-          destHex?: string;
-          sourceValue?: string;
-          destValue?: string;
-          errorReason?: string;
-        }>;
+        results: MigrationTokenItemResult[];
         error?: string;
       };
     }

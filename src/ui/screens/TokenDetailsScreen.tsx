@@ -1,6 +1,5 @@
 import React, { useState, useRef, useMemo, useEffect } from 'react';
 import {
-  ArrowLeft,
   MoreHorizontal,
   Copy,
   Check,

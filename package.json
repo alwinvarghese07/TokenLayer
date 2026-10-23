@@ -2,7 +2,7 @@
   "name": "TokenLayer",
   "version": "1.0.0",
   "type": "module",
-  "description": "Your Figma Plugin",
+  "description": "Explore, inspect, and safely migrate design tokens and local variable collections in Figma.",
   "main": "dist/code.js",
   "scripts": {
     "build:ui": "vite build --config vite.config.ui.ts",
@@ -14,8 +14,8 @@
     "watch:ui": "vite build --config vite.config.ui.ts --watch",
     "watch:plugin": "vite build --config vite.config.plugin.ts --watch"
   },
-  "author": "",
-  "license": "",
+  "author": "TokenLayer",
+  "license": "MIT",
   "devDependencies": {
     "@eslint/js": "^9.39.4",
     "@figma/eslint-plugin-figma-plugins": "*",

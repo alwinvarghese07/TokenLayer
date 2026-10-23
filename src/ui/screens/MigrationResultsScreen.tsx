@@ -1,16 +1,16 @@
 import React, { useState, useMemo, useRef, useEffect } from 'react';
 import {
-  ArrowLeft,
   ArrowRight,
   AlertTriangle,
   CheckCircle2,
-  XCircle,
   Search,
   X,
   ChevronDown,
+  ChevronRight,
   ListFilter,
   Layers,
   Code2,
+  AlertCircle,
 } from 'lucide-react';
 import { BackButton } from '../components/BackButton';
 import type { TokenResolvedType } from '../../shared/messages';
@@ -57,6 +57,29 @@ export const MigrationResultsScreen: React.FC<MigrationResultsScreenProps> = ({
   const [statusFilter, setStatusFilter] = useState<FilterOption>('ALL');
   const [isFilterOpen, setIsFilterOpen] = useState<boolean>(false);
   const filterDropdownRef = useRef<HTMLDivElement>(null);
+
+  // Auto-expand any tokens that were skipped or failed so their explanations are immediately accessible
+  const [expandedIds, setExpandedIds] = useState<Set<string>>(() => {
+    const initial = new Set<string>();
+    results.forEach((item) => {
+      if (item.status === 'SKIPPED' || item.status === 'FAILED') {
+        initial.add(item.id);
+      }
+    });
+    return initial;
+  });
+
+  const toggleExpand = (id: string) => {
+    setExpandedIds((prev) => {
+      const next = new Set(prev);
+      if (next.has(id)) {
+        next.delete(id);
+      } else {
+        next.add(id);
+      }
+      return next;
+    });
+  };
 
   useEffect(() => {
     const handleClickOutside = (e: MouseEvent) => {
@@ -147,6 +170,11 @@ export const MigrationResultsScreen: React.FC<MigrationResultsScreenProps> = ({
     };
   };
 
+  const formatSkipReason = (detail?: string) => {
+    if (!detail) return 'Variable already exists in destination';
+    return detail.replace(/^Skipped(\s*[·:]\s*)?/i, '');
+  };
+
   const getFilterLabel = (f: FilterOption) => {
     switch (f) {
       case 'SUCCESSFUL':
@@ -171,24 +199,25 @@ export const MigrationResultsScreen: React.FC<MigrationResultsScreenProps> = ({
           <BackButton onClick={onBackToPreview || onBackToTokens} />
         </div>
 
-        <h1 className="text-[20px] font-bold text-white tracking-tight leading-tight mt-1">
-          Migration Results
-        </h1>
-
-        <p className="text-[13.5px] text-[#8E8E93] mt-2.5 font-normal leading-normal">
-          Review the outcome of your token migration.
-        </p>
+        <div className="mt-2">
+          <h1 className="text-[22px] font-semibold text-white tracking-tight leading-tight mt-1.5">
+            Migration Results
+          </h1>
+          <p className="text-[13px] font-normal text-[#8E8E93] mt-0.5 leading-normal">
+            Review the outcome of your token migration.
+          </p>
+        </div>
 
         {/* 2. Collection Route Capsule / Pill Box */}
-        <div className="mt-3.5 bg-[#141416] border border-[#222225] rounded-lg px-3.5 py-2.5 flex items-center justify-between">
+        <div className="mt-3.5 bg-[#121214] border border-[#4a4a4a] rounded-lg px-3.5 py-2.5 flex items-center justify-between">
           <div className="flex items-center gap-2 min-w-0 flex-1 text-[13px] font-mono">
-            <Layers className="w-3.5 h-3.5 text-[#8E8E93] shrink-0" />
+            <Layers className="w-3.5 h-3.5 text-[#d4d4d8] shrink-0" />
             <span className="text-white truncate">{sourceCollectionName}</span>
-            <ArrowRight className="w-3.5 h-3.5 text-[#71717A] shrink-0 mx-1" />
-            <Code2 className="w-3.5 h-3.5 text-[#8E8E93] shrink-0" />
+            <ArrowRight className="w-3.5 h-3.5 text-[#d4d4d8] shrink-0 mx-1" />
+            <Code2 className="w-3.5 h-3.5 text-[#d4d4d8] shrink-0" />
             <span className="text-white truncate">{destinationCollectionName}</span>
           </div>
-          <span className="text-[12px] text-[#71717A] font-mono shrink-0 ml-2">
+          <span className="text-[12px] text-[#d4d4d8] font-mono shrink-0 ml-2">
             {totalCount} tokens
           </span>
         </div>
@@ -328,9 +357,8 @@ export const MigrationResultsScreen: React.FC<MigrationResultsScreenProps> = ({
                           setStatusFilter(f);
                           setIsFilterOpen(false);
                         }}
-                        className={`w-full px-3 py-1.5 text-left text-[12px] flex items-center justify-between hover:bg-white/5 transition-colors cursor-pointer ${
-                          isSelected ? 'text-white font-medium bg-white/5' : 'text-[#A1A1AA]'
-                        }`}
+                        className={`w-full px-3 py-1.5 text-left text-[12px] flex items-center justify-between hover:bg-white/5 transition-colors cursor-pointer ${isSelected ? 'text-white font-medium bg-white/5' : 'text-[#A1A1AA]'
+                          }`}
                       >
                         <span>{getFilterLabel(f)}</span>
                         {f === 'FAILED' && failedCount > 0 && (
@@ -352,47 +380,148 @@ export const MigrationResultsScreen: React.FC<MigrationResultsScreenProps> = ({
           {filteredResults.length > 0 ? (
             filteredResults.map((item) => {
               const { prefix, leaf } = splitTokenName(item.name);
+              const isExpanded = expandedIds.has(item.id);
+              const hasReason = Boolean(item.detail || item.errorReason);
+
               return (
-                <div
-                  key={item.id}
-                  title={`${item.name}\n${item.detail}`}
-                  className="py-2.5 px-1 flex items-center justify-between gap-3 hover:bg-white/[0.02] transition-colors"
-                >
-                  {/* Left: Swatch + Token Name */}
-                  <div className="flex items-center gap-2.5 min-w-0 flex-1">
-                    <div
-                      className="w-3 h-3 rounded-[2px] shrink-0 border border-white/10"
-                      style={{ backgroundColor: item.sourceHex || item.destHex || '#3B82F6' }}
-                    />
-                    <div className="truncate font-mono text-[13px] leading-tight flex items-baseline">
-                      {prefix && <span className="text-[#71717A] truncate">{prefix}</span>}
-                      <span className="text-white font-semibold">{leaf}</span>
+                <div key={item.id} className="transition-colors">
+                  {/* Row Header - Click to toggle expansion */}
+                  <div
+                    onClick={() => toggleExpand(item.id)}
+                    className="py-2 px-1.5 flex items-center justify-between gap-3 hover:bg-white/[0.04] transition-colors cursor-pointer select-none rounded-md"
+                  >
+                    {/* Left: Expand Chevron + Swatch + Token Name & Subtitle */}
+                    <div className="flex items-center gap-2 min-w-0 flex-1">
+                      <ChevronRight
+                        className={`w-3.5 h-3.5 text-[#ffffff] shrink-0 transition-transform duration-150 ${isExpanded ? 'rotate-90 text-white' : ''
+                          }`}
+                      />
+                      <div
+                        className="w-3 h-3 rounded-[2px] shrink-0 border border-white/10"
+                        style={{ backgroundColor: item.sourceHex || item.destHex || '#3B82F6' }}
+                      />
+                      <div className="min-w-0 flex-1">
+                        <div className="truncate font-mono text-[13px] leading-tight flex items-baseline pb-1">
+                          {prefix && <span className="text-[#ffffff] truncate">{prefix}</span>}
+                          <span className="text-white font-semibold">{leaf}</span>
+                        </div>
+                        {/* Subtitle preview when collapsed */}
+                        {!isExpanded && hasReason && (
+                          <div className="text-[11px] text-[#ffffff] truncate font-sans mt-0.5">
+                            {item.status === 'SKIPPED'
+                              ? `Skipped · ${formatSkipReason(item.detail)}`
+                              : item.status === 'FAILED'
+                                ? (item.errorReason || item.detail)
+                                : item.detail}
+                          </div>
+                        )}
+                      </div>
+                    </div>
+
+                    {/* Right: Status Badge */}
+                    <div className="shrink-0 flex items-center gap-2">
+                      {(item.status === 'SUCCESSFUL' || (item.status as string) === 'COMPLETED') && (
+                        <span className="inline-block bg-[#16A34A] text-white text-[11px] font-medium px-2 py-1 rounded-md leading-none shadow-xs">
+                          {(item.status as string) === 'COMPLETED' ? 'Completed' : 'Created'}
+                        </span>
+                      )}
+                      {item.status === 'UPDATED' && (
+                        <span className="inline-block bg-[#2563EB] text-white text-[11px] font-medium px-2 py-1 rounded-md leading-none shadow-xs">
+                          Updated
+                        </span>
+                      )}
+                      {item.status === 'SKIPPED' && (
+                        <span className="inline-block bg-[#D97706] text-white text-[11px] font-medium px-2 py-1 rounded-md leading-none shadow-xs">
+                          Skipped
+                        </span>
+                      )}
+                      {item.status === 'FAILED' && (
+                        <span className="inline-block bg-[#DC2626] text-white text-[11px] font-medium px-2 py-1 rounded-md leading-none shadow-xs">
+                          Failed
+                        </span>
+                      )}
                     </div>
                   </div>
 
-                  {/* Right: Status Badge */}
-                  <div className="shrink-0">
-                    {item.status === 'SUCCESSFUL' && (
-                      <span className="inline-block bg-[#062419] border border-[#0A3D29] text-[#22C55E] text-[11px] font-medium px-2.5 py-0.5 rounded-md leading-none">
-                        Created
-                      </span>
-                    )}
-                    {item.status === 'UPDATED' && (
-                      <span className="inline-block bg-[#0B1E3B] border border-[#143261] text-[#3B82F6] text-[11px] font-medium px-2.5 py-0.5 rounded-md leading-none">
-                        Updated
-                      </span>
-                    )}
-                    {item.status === 'SKIPPED' && (
-                      <span className="inline-block bg-[#2E1B07] border border-[#4D2D0C] text-[#F59E0B] text-[11px] font-medium px-2.5 py-0.5 rounded-md leading-none">
-                        Skipped
-                      </span>
-                    )}
-                    {item.status === 'FAILED' && (
-                      <span className="inline-block bg-[#331114] border border-[#541C21] text-[#EF4444] text-[11px] font-medium px-2.5 py-0.5 rounded-md leading-none">
-                        Failed
-                      </span>
-                    )}
-                  </div>
+                  {/* Expanded Inspection Drawer */}
+                  {isExpanded && (
+                    <div className="mx-1 mb-2.5 mt-0.5 bg-[#121214] border border-[#4a4a4a] rounded-lg p-3 space-y-2.5">
+                      {/* Skipped Reason Line */}
+                      {item.status === 'SKIPPED' && (
+                        <div className="text-[12px] text-[#e4e4e7] leading-normal font-sans py-0.5">
+                          Skipped · {formatSkipReason(item.detail)}
+                        </div>
+                      )}
+
+                      {item.status === 'FAILED' && (
+                        <div className="bg-red-950/30 border border-red-500/35 rounded-md p-2.5 flex items-start gap-2.5">
+                          <AlertCircle className="w-4 h-4 text-red-400 shrink-0 mt-0.5" />
+                          <div className="flex-1 min-w-0">
+                            <div className="text-red-300 font-semibold text-[11px] uppercase tracking-wider">
+                              Failure Details
+                            </div>
+                            <div className="text-[#E4E4E7] text-[12px] leading-relaxed mt-0.5 font-sans">
+                              {item.errorReason || item.detail || 'An unexpected error occurred while writing this variable to Figma.'}
+                            </div>
+                          </div>
+                        </div>
+                      )}
+
+                      {(item.status === 'SUCCESSFUL' || item.status === 'UPDATED') && (
+                        <div className="bg-[#121214] border border-[#4a4a4a] rounded-md p-2 flex items-start gap-2">
+                          <CheckCircle2 className="w-3.5 h-3.5 text-emerald-400 shrink-0 mt-0.5" />
+                          <div className="text-[#d4d4d8] text-[12px] leading-relaxed font-sans">
+                            {item.detail || (item.status === 'SUCCESSFUL' ? 'Successfully created in destination' : 'Successfully updated in destination')}
+                          </div>
+                        </div>
+                      )}
+
+                      {/* Side-by-side Source vs Destination Inspection */}
+                      <div className="grid grid-cols-2 gap-2 text-[11.5px] font-mono">
+                        {/* Source Side */}
+                        <div className="bg-[#121214] border border-[#4a4a4a] rounded-md p-2">
+                          <div className="text-[12px] text-[#a9a9a9] font-sans font-medium mb-1">
+                            Source ({sourceCollectionName})
+                          </div>
+                          <div className="flex items-center gap-1.5 text-white">
+                            {item.sourceHex && (
+                              <div
+                                className="w-2.5 h-2.5 rounded-[2px] border border-white/20 shrink-0"
+                                style={{ backgroundColor: item.sourceHex }}
+                              />
+                            )}
+                            <span className="truncate text-[14px]">{item.sourceValue || item.sourceHex || '—'}</span>
+                          </div>
+                        </div>
+
+                        {/* Destination Side */}
+                        <div className="bg-[#121214] border border-[#4a4a4a] rounded-md p-2">
+                          <div className="text-[12px] text-[#a9a9a9] font-sans font-medium mb-1">
+                            Destination ({destinationCollectionName})
+                          </div>
+                          <div className="flex items-center gap-1.5 text-white">
+                            {(item.destHex || (item.status === 'SUCCESSFUL' && item.sourceHex)) && (
+                              <div
+                                className="w-2.5 h-2.5 rounded-[2px] border border-white/20 shrink-0"
+                                style={{
+                                  backgroundColor: item.destHex || (item.status === 'SUCCESSFUL' ? item.sourceHex : undefined),
+                                }}
+                              />
+                            )}
+                            <span className="truncate text-[14px]">
+                              {item.destValue || item.destHex || (item.status === 'SUCCESSFUL' ? (item.sourceValue || item.sourceHex) : '—')}
+                            </span>
+                          </div>
+                        </div>
+                      </div>
+
+                      {/* Technical Meta (Variable Path & Resolved Type) */}
+                      <div className="flex items-center justify-between text-[11px] text-[#71717A] px-1 font-mono">
+                        <span className="truncate max-w-[70%]" title={item.name}>Path: {item.name}</span>
+                        <span>Type: {item.resolvedType}</span>
+                      </div>
+                    </div>
+                  )}
                 </div>
               );
             })
@@ -414,7 +543,20 @@ export const MigrationResultsScreen: React.FC<MigrationResultsScreenProps> = ({
           Back to Tokens
         </button>
 
-        {failedCount > 0 && (
+        {failedCount > 0 && onRetryFailed && (
+          <button
+            type="button"
+            onClick={onRetryFailed}
+            className="bg-[#2E1114] hover:bg-[#3D171B] border border-[#541C21] text-[#F87171] font-medium text-[13px] h-10 px-4 rounded-lg flex items-center justify-center gap-1.5 transition-colors cursor-pointer shrink-0"
+          >
+            <span>Retry Failed</span>
+            <span className="bg-[#5C2128] text-white text-[11px] font-bold px-1.5 py-0.2 rounded-full">
+              {failedCount}
+            </span>
+          </button>
+        )}
+
+        {failedCount > 0 && !onRetryFailed && (
           <button
             type="button"
             onClick={() => setStatusFilter('FAILED')}

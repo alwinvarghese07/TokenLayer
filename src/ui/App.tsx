@@ -1,18 +1,24 @@
 import React, { useState, useCallback, useEffect, useRef } from 'react';
 import { postToPlugin, usePluginMessage } from './utils/messaging';
-import type { PluginMessage, TokenCollection, TokenItem } from '../shared/messages';
+import type { PluginMessage, TokenCollection, TokenItem, MigrationRecord } from '../shared/messages';
 import { HomeScreen } from './screens/HomeScreen';
 import { ExplorerScreen } from './screens/ExplorerScreen';
 import { MigrationScreen } from './screens/MigrationScreen';
+import { MigrationResultsScreen } from './screens/MigrationResultsScreen';
+import { MigrationHistoryScreen } from './screens/MigrationHistoryScreen';
 import { ResizeHandle } from './components/ResizeHandle';
 import { copyToClipboard } from './utils/clipboard';
 
-type Screen = 'home' | 'explorer' | 'migration';
+type Screen = 'home' | 'explorer' | 'migration' | 'activity';
 
 export const App: React.FC = () => {
   const [currentScreen, setCurrentScreen] = useState<Screen>('home');
   const [collections, setCollections] = useState<TokenCollection[]>([]);
   const [tokens, setTokens] = useState<TokenItem[]>([]);
+  const [migrationHistory, setMigrationHistory] = useState<MigrationRecord[]>([]);
+  const [historyLoading, setHistoryLoading] = useState<boolean>(true);
+  const [historyError, setHistoryError] = useState<string | null>(null);
+  const [viewingRecord, setViewingRecord] = useState<MigrationRecord | null>(null);
   const [loading, setLoading] = useState<boolean>(true);
   const [docName, setDocName] = useState<string>('');
   const [copiedId, setCopiedId] = useState<string | null>(null);
@@ -31,6 +37,12 @@ export const App: React.FC = () => {
         setCollections(msg.payload.collections);
         setTokens(msg.payload.tokens);
         setLoading(false);
+        break;
+
+      case 'MIGRATION_HISTORY_LOADED':
+        setMigrationHistory(msg.payload.records);
+        setHistoryLoading(false);
+        setHistoryError(msg.payload.error || null);
         break;
 
       case 'ERROR':
@@ -72,51 +84,112 @@ export const App: React.FC = () => {
 
   return (
     <div className="w-screen h-screen bg-[#0D0D0E] text-white overflow-hidden relative">
-      {currentScreen === 'home' && (
-        <HomeScreen
-          collections={collections}
-          tokens={tokens}
-          loading={loading}
-          onExplore={() => setCurrentScreen('explorer')}
-          onStartMigration={() => {
-            setMigrationTokenIds([]);
-            setReturnScreen('home');
-            setCurrentScreen('migration');
-          }}
+      {viewingRecord ? (
+        <MigrationResultsScreen
+          sourceCollectionName={viewingRecord.sourceCollectionName}
+          destinationCollectionName={viewingRecord.destinationCollectionName}
+          results={
+            viewingRecord.results && viewingRecord.results.length > 0
+              ? viewingRecord.results
+              : viewingRecord.errorMessage
+              ? [
+                  {
+                    id: 'err-history',
+                    name: 'Migration Error',
+                    leafName: 'Error',
+                    groupPath: 'Figma API',
+                    resolvedType: 'STRING',
+                    status: 'FAILED',
+                    detail: viewingRecord.errorMessage,
+                    errorReason: viewingRecord.errorMessage,
+                  },
+                ]
+              : []
+          }
+          isLoading={viewingRecord.status === 'IN_PROGRESS'}
+          onBackToTokens={() => setViewingRecord(null)}
+          onRetryFailed={
+            viewingRecord.results?.some((r) => r.status === 'FAILED')
+              ? () => {
+                  const failedIds =
+                    viewingRecord.results
+                      ?.filter((r) => r.status === 'FAILED')
+                      .map((r) => r.id) || [];
+                  setViewingRecord(null);
+                  setMigrationTokenIds(failedIds);
+                  setReturnScreen('home');
+                  setCurrentScreen('migration');
+                }
+              : undefined
+          }
         />
-      )}
+      ) : (
+        <>
+          {currentScreen === 'home' && (
+            <HomeScreen
+              collections={collections}
+              tokens={tokens}
+              loading={loading}
+              migrationHistory={migrationHistory}
+              historyLoading={historyLoading}
+              historyError={historyError}
+              onExplore={() => setCurrentScreen('explorer')}
+              onStartMigration={() => {
+                setMigrationTokenIds([]);
+                setReturnScreen('home');
+                setCurrentScreen('migration');
+              }}
+              onSelectMigration={(record) => setViewingRecord(record)}
+              onViewAllHistory={() => setCurrentScreen('activity')}
+            />
+          )}
 
-      {currentScreen === 'explorer' && (
-        <ExplorerScreen
-          collections={collections}
-          tokens={tokens}
-          loading={loading}
-          docName={docName}
-          onBack={() => setCurrentScreen('home')}
-          onRefresh={handleRefresh}
-          onStartMigration={(ids) => {
-            setMigrationTokenIds(ids);
-            setReturnScreen('explorer');
-            setCurrentScreen('migration');
-          }}
-          onCopy={handleCopy}
-          copiedId={copiedId}
-        />
-      )}
+          {currentScreen === 'activity' && (
+            <MigrationHistoryScreen
+              migrationHistory={migrationHistory}
+              onBack={() => setCurrentScreen('home')}
+              onSelectMigration={(record) => setViewingRecord(record)}
+              onStartMigration={() => {
+                setMigrationTokenIds([]);
+                setReturnScreen('activity');
+                setCurrentScreen('migration');
+              }}
+            />
+          )}
 
-      {currentScreen === 'migration' && (
-        <MigrationScreen
-          onBack={() => setCurrentScreen(returnScreen)}
-          selectedTokenIds={migrationTokenIds}
-          tokens={tokens}
-          collections={collections}
-          docName={docName}
-          onNotify={(msg) => {
-            setToastMessage(msg);
-            if (toastTimerRef.current) clearTimeout(toastTimerRef.current);
-            toastTimerRef.current = setTimeout(() => setToastMessage(null), 2500);
-          }}
-        />
+          {currentScreen === 'explorer' && (
+            <ExplorerScreen
+              collections={collections}
+              tokens={tokens}
+              loading={loading}
+              docName={docName}
+              onBack={() => setCurrentScreen('home')}
+              onRefresh={handleRefresh}
+              onStartMigration={(ids) => {
+                setMigrationTokenIds(ids);
+                setReturnScreen('explorer');
+                setCurrentScreen('migration');
+              }}
+              onCopy={handleCopy}
+              copiedId={copiedId}
+            />
+          )}
+
+          {currentScreen === 'migration' && (
+            <MigrationScreen
+              onBack={() => setCurrentScreen(returnScreen)}
+              selectedTokenIds={migrationTokenIds}
+              tokens={tokens}
+              collections={collections}
+              docName={docName}
+              onNotify={(msg) => {
+                setToastMessage(msg);
+                if (toastTimerRef.current) clearTimeout(toastTimerRef.current);
+                toastTimerRef.current = setTimeout(() => setToastMessage(null), 2500);
+              }}
+            />
+          )}
+        </>
       )}
 
       {/* Floating minimal toast */}
